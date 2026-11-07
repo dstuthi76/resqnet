@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ResQNet · Mesh simulator</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .phones { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .phones { grid-template-columns: 1fr 1fr; } }
+  .phone { background: #0b0f14; border: 2px solid var(--line); border-radius: 22px; padding: 14px; min-height: 360px; position: relative; }
+  .phone.online { border-color: var(--low); }
+  .phone h4 { margin: 0 0 6px; display: flex; justify-content: space-between; }
+  .log { font-size: 12px; color: var(--muted); max-height: 160px; overflow-y: auto; margin-top: 8px; }
+  .log div { border-bottom: 1px dashed #222; padding: 2px 0; }
+  .sos-big { width: 100%; padding: 14px; font-size: 18px; font-weight: 800; background: var(--crit); border: 0; color: #fff; border-radius: 12px; }
+  .status { margin-top: 8px; padding: 8px; border-radius: 8px; background: #13233a; color: #9cc3ff; font-size: 13px; display: none; }
+  .link { text-align: center; color: var(--muted); font-size: 12px; }
+  .pkt { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--crit); margin-right: 3px; }
+  .pkt.ack { background: var(--low); } .pkt.st { background: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="banner"><b>SIMULATION.</b> Four virtual phones in a line, each only within Bluetooth range of its neighbours (1↔2↔3↔4).
+    It runs the same store-and-forward rules as the Android app (message IDs, hop limit, expiry, acknowledgements) and uploads to the <b>real</b> backend.
+    Use it when real phones aren't available, and say so in the demo.</div>
+  <div class="row"><button id="tick" class="primary">▶ Auto-relay on</button><span class="muted">One relay round per second. Packets:
+    <span class="pkt"></span>SOS <span class="pkt ack"></span>ACK <span class="pkt st"></span>status</span></div>
+  <div class="phones" id="phones"></div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+header("/mesh");
+const MAX_HOPS = 8, TTL_MS = 6 * 3600 * 1000;
+const phones = [1, 2, 3, 4].map((n) => ({ n, online: false, store: new Map(), seen: new Set(), acked: new Set(), status: {}, log: [], mine: [] }));
+const neighbours = (p) => phones.filter((q) => Math.abs(q.n - p.n) === 1);
+let auto = true;
+
+function log(p, s) { p.log.unshift(new Date().toLocaleTimeString() + " " + s); p.log = p.log.slice(0, 40); }
+
+function sendSOS(p) {
+  const f = document.getElementById("f" + p.n);
+  const people = Number(f.people.value) || 1;
+  const id = "sim-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+  const pkt = { type: "SOS", id, text: f.text.value, people, needs: f.med.checked ? ["medicine"] : [],
+    lat: 17.3731 + (Math.random() - .5) * .002, lng: 78.5002 + (Math.random() - .5) * .002,
+    ts: new Date().toISOString(), hops: 0, created: Date.now(), device_id: "sim-phone-" + p.n, channel: "mesh" };
+  p.store.set(id, pkt); p.seen.add(id); p.mine.push(id);
+  log(p, `SOS created ${id.slice(-4)} - ${p.online ? "online" : "no network, waiting for mesh"}`);
+  render();
+}
+
+function receive(p, pkt, from) {
+  if (pkt.type === "ACK") {
+    let fresh = false;
+    pkt.ids.forEach((id) => { if (!p.acked.has(id)) { p.acked.add(id); fresh = true; } if (p.store.delete(id)) log(p, `ACK ${id.slice(-4)} - delivered, deleted`); });
+    if (fresh) p.store.set("ack-" + pkt.ids.join(","), { ...pkt, hops: pkt.hops + 1 });
+    return;
+  }
+  if (pkt.type === "STATUS") {
+    const prev = p.status[pkt.ref];
+    if (!prev || prev.v < pkt.v) {
+      p.status[pkt.ref] = pkt; p.store.set("st-" + pkt.ref + "-" + pkt.v, { ...pkt, hops: pkt.hops + 1 });
+      if (p.mine.includes(pkt.ref)) log(p, `🚤 ${pkt.text}`);
+    }
+    return;
+  }
+  if (p.seen.has(pkt.id) || p.acked.has(pkt.id)) return;               // already relayed
+  if (pkt.hops >= MAX_HOPS || Date.now() - pkt.created > TTL_MS) return; // hop limit / expiry
+  p.seen.add(pkt.id); p.store.set(pkt.id, { ...pkt, hops: pkt.hops + 1 });
+  log(p, `relayed SOS ${pkt.id.slice(-4)} from phone ${from.n} (hop ${pkt.hops + 1})`);
+}
+
+async function upload(p) {
+  const sos = [...p.store.values()].filter((x) => x.type === "SOS");
+  if (sos.length) {
+    try {
+      const r = await api("/api/sos", { method: "POST", body: sos.map(({ type, created, ...rest }) => rest) });
+      r.acks.forEach((id) => { p.store.delete(id); p.acked.add(id); });
+      if (r.acks.length) { p.store.set("ack-" + r.acks.join(","), { type: "ACK", ids: r.acks, hops: 0 }); log(p, `⬆ uploaded ${r.acks.length} SOS to cloud`); }
+    } catch (e) { log(p, "upload failed: " + e.message); }
+  }
+  const watch = [...new Set([...p.seen, ...p.mine])].filter((id) => id.startsWith("sim-"));
+  if (watch.length) {
+    try {
+      const st = await api("/api/sos/status?ids=" + watch.join(","));
+      Object.entries(st).forEach(([ref, s]) => {
+        const text = s.status === "claimed" ? `Help on the way: ${s.team}, about ${s.eta_min} min` : s.status === "closed" ? "Marked reached by rescue team" : "Received by control room";
+        const v = { received: 1, reviewing: 1, open: 2, claimed: 3, closed: 4 }[s.status] || 1;
+        const prev = p.status[ref];
+        if (!prev || prev.v < v) { const pkt = { type: "STATUS", ref, text, v, hops: 0 }; p.status[ref] = pkt; p.store.set("st-" + ref + "-" + v, pkt); }
+      });
+    } catch (_) {}
+  }
+}
+
+async function round() {
+  const snapshot = phones.map((p) => [...p.store.values()]);
+  phones.forEach((p, i) => neighbours(p).forEach((q) => snapshot[i].forEach((pkt) => receive(q, pkt, p))));
+  for (const p of phones) if (p.online) await upload(p);
+  render();
+}
+
+function render() {
+  const el = document.getElementById("phones");
+  if (!el.children.length) {
+    el.innerHTML = phones.map((p) => `<div class="phone" id="ph${p.n}"><h4>📱 Phone ${p.n}<label style="font-weight:400;font-size:12px">
+      <input type="checkbox" onchange="toggle(${p.n}, this.checked)"> network</label></h4>
+      ${p.n === 1 ? `<form id="f1" onsubmit="event.preventDefault();sendSOS(phones[0])">
+        <textarea name="text" rows="3" style="width:100%">3 people on roof, grandmother needs insulin. Malakpet</textarea>
+        <div class="row"><input name="people" type="number" value="3" style="width:60px"> people <label><input name="med" type="checkbox" checked> medical</label></div>
+        <button class="sos-big">SOS</button></form>` : `<form id="f${p.n}" onsubmit="event.preventDefault();sendSOS(phones[${p.n - 1}])" class="row">
+        <input name="text" value="Water entering house, 2 people" style="flex:1"><input name="people" type="hidden" value="2"><input name="med" type="checkbox" hidden><button>SOS</button></form>`}
+      <div class="status" id="st${p.n}"></div><div id="pk${p.n}" style="margin-top:8px"></div><div class="log" id="lg${p.n}"></div></div>`).join("");
+  }
+  phones.forEach((p) => {
+    document.getElementById("ph" + p.n).classList.toggle("online", p.online);
+    document.getElementById("pk" + p.n).innerHTML = [...p.store.values()].map((x) => `<span class="pkt ${x.type === "ACK" ? "ack" : x.type === "STATUS" ? "st" : ""}" title="${x.type} hops ${x.hops}"></span>`).join("") + ` <small class="muted">${p.store.size} held</small>`;
+    document.getElementById("lg" + p.n).innerHTML = p.log.map((l) => `<div>${esc(l)}</div>`).join("");
+    const mineSt = p.mine.map((id) => p.status[id]).filter(Boolean);
+    const s = document.getElementById("st" + p.n);
+    s.style.display = mineSt.length ? "block" : "none";
+    s.textContent = mineSt.length ? mineSt[mineSt.length - 1].text : "";
+  });
+}
+function toggle(n, on) { phones[n - 1].online = on; log(phones[n - 1], on ? "network ON" : "network OFF (airplane mode)"); render(); }
+document.getElementById("tick").onclick = (e) => { auto = !auto; e.target.textContent = auto ? "▶ Auto-relay on" : "⏸ Auto-relay off"; };
+render();
+setInterval(() => { if (auto) round(); }, 1000);
+</script>
+</body>
+</html>

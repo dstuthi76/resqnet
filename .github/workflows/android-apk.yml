@@ -1,0 +1,45 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: "Control room URL baked into the app (can be changed in app settings)"
+        default: "https://resqnet.onrender.com"
+  push:
+    paths: ["mobile/**", ".github/workflows/android-apk.yml"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.5"
+          channel: stable
+          cache: true
+      - name: Generate Android scaffolding (keeps our lib/ and manifest)
+        run: |
+          flutter create --org org.resqnet --project-name resqnet_app --platforms android /tmp/scaffold
+          mkdir -p android
+          cp -rn /tmp/scaffold/android/. android/
+          cp android_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          # Nearby Connections + permission_handler need minSdk 23
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 23/; s/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' android/app/build.gradle* || true
+          grep -n "minSdk" android/app/build.gradle* || true
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
+      - name: Build release APK
+        run: flutter build apk --release --dart-define=SERVER_URL="${{ github.event.inputs.server_url || 'https://resqnet.onrender.com' }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resqnet-apk
+          path: mobile/build/app/outputs/flutter-apk/app-release.apk

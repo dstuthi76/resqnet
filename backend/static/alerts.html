@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ResQNet · Early warning</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="grid2">
+    <div class="card"><h3 style="margin-top:0">Rainfall risk by zone <span id="src" class="pill"></span></h3>
+      <div id="map" style="height:380px;border-radius:8px"></div></div>
+    <div class="card">
+      <h3 style="margin-top:0">Multilingual voice alert</h3>
+      <div class="row">
+        <select id="lang"><option value="te">Telugu</option><option value="ta">Tamil</option><option value="hi">Hindi</option><option value="en">English</option></select>
+        <button id="gen" class="primary">Generate alert for high-risk zones</button>
+      </div>
+      <textarea id="text" rows="8" style="width:100%" placeholder="Alert text appears here - you can edit it before playing."></textarea>
+      <div class="row"><button id="play">▶ Play voice</button><span id="srcnote" class="muted"></span></div>
+      <audio id="audio" controls style="width:100%;display:none"></audio>
+    </div>
+  </div>
+  <div class="card" style="margin-top:16px;overflow-x:auto">
+    <table><thead><tr><th>Zone</th><th>Low-lying</th><th>Rain next 3 days (mm)</th><th>Risk</th></tr></thead><tbody id="tbl"></tbody></table>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/common.js"></script>
+<script>
+header("/alerts");
+let fc = null;
+const RC = { high: "#f85149", medium: "#d29922", low: "#3fb950" };
+async function load() {
+  fc = await api("/api/alerts/forecast");
+  document.getElementById("src").textContent = fc.source;
+  document.getElementById("tbl").innerHTML = fc.zones.map((z) => `<tr><td>${esc(z.name)}</td><td>${z.lowLying ? "yes" : ""}</td>
+    <td>${z.rain_mm.map((m, i) => `${z.days[i].slice(5)}: <b>${Math.round(m)}</b>`).join(" · ")}</td>
+    <td><span class="pill" style="color:${RC[z.risk]};border-color:${RC[z.risk]}">${z.risk}</span></td></tr>`).join("");
+  if (window.L) {
+    const map = L.map("map").setView([17.36, 78.50], 11);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "&copy; OpenStreetMap" }).addTo(map);
+    fc.zones.forEach((z) => L.circle([z.lat, z.lng], { radius: 1000, color: RC[z.risk], fillOpacity: .35 }).bindTooltip(`${z.name}: ${z.risk} (${Math.round(z.peak_mm)} mm)`).addTo(map));
+  }
+}
+document.getElementById("gen").onclick = async (e) => {
+  e.target.disabled = true;
+  try {
+    const ids = fc.zones.filter((z) => z.risk === "high").map((z) => z.zoneId);
+    const r = await api("/api/alerts/generate", { method: "POST", body: { lang: document.getElementById("lang").value, zone_ids: ids } });
+    document.getElementById("text").value = r.text;
+    document.getElementById("srcnote").textContent = r.source === "gemini" ? "Written by Gemini" : "Offline template (add GEMINI_API_KEY for AI-written alerts)";
+  } catch (err) { toast(err.message); }
+  e.target.disabled = false;
+};
+document.getElementById("play").onclick = async () => {
+  const text = document.getElementById("text").value, lang = document.getElementById("lang").value;
+  if (!text) return toast("Generate an alert first");
+  try {
+    const blob = await api("/api/alerts/audio", { method: "POST", body: { text, lang } });
+    const a = document.getElementById("audio"); a.src = URL.createObjectURL(blob); a.style.display = "block"; a.play();
+  } catch (_) {
+    const u = new SpeechSynthesisUtterance(text); u.lang = { te: "te-IN", ta: "ta-IN", hi: "hi-IN", en: "en-IN" }[lang];
+    const v = speechSynthesis.getVoices().find((x) => x.lang.startsWith(lang));
+    if (v) u.voice = v; else toast("No " + u.lang + " voice in this browser - install gTTS on the server for audio");
+    speechSynthesis.speak(u);
+  }
+};
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ResQNet · Rescue ops</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="ops">
+  <section class="side">
+    <div class="toolbar">
+      <select id="filter">
+        <option value="active">Open + claimed</option><option value="open">Open</option>
+        <option value="claimed">Claimed</option><option value="closed">Closed</option><option value="all">All</option>
+      </select>
+      <input id="search" placeholder="Search…" style="flex:1;min-width:90px">
+      <button id="btn-demo" title="Feed the 300 synthetic multilingual messages">Load demo messages</button>
+      <button id="btn-reset" class="danger" title="Wipe all data">Reset</button>
+    </div>
+    <div id="unlocated" class="toolbar" style="display:none"></div>
+    <div id="list" class="list"><p class="muted" style="padding:12px">No cases yet. Click <b>Load demo messages</b> or send an SOS from the app / mesh simulator.</p></div>
+  </section>
+  <section><div id="map"></div></section>
+</main>
+
+<aside id="drawer" class="drawer"></aside>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/common.js"></script>
+<script>
+header("/");
+let cases = [], teams = [], selected = null, map = null, markers = {}, zoneLayer = null;
+
+function initMap() {
+  if (!window.L) { document.getElementById("map").innerHTML = '<p class="muted" style="padding:20px">Map library could not load (offline?). The case list still works.</p>'; return; }
+  map = L.map("map").setView([17.365, 78.50], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+  api("/api/zones").then((g) => {
+    zoneLayer = L.geoJSON(g, { style: { color: "#2f81f7", weight: 1, fillOpacity: 0.04, dashArray: "4" },
+      onEachFeature: (f, l) => l.bindTooltip(f.properties.name) }).addTo(map);
+  });
+  api("/api/shelters").then((s) => s.forEach((x) => L.circleMarker([x.lat, x.lng], { radius: 5, color: "#3fb950", fillOpacity: 1 })
+    .bindTooltip("🏠 " + x.name).addTo(map)));
+}
+
+function visible() {
+  const f = document.getElementById("filter").value, s = document.getElementById("search").value.toLowerCase();
+  return cases.filter((c) => (f === "all" || (f === "active" ? c.status !== "closed" : c.status === f)) &&
+    (!s || (c.summary + c.reason + (c.zone || "") + c.id).toLowerCase().includes(s)));
+}
+
+function render() {
+  const list = document.getElementById("list"), v = visible();
+  if (!v.length) { list.innerHTML = '<p class="muted" style="padding:12px">No cases match.</p>'; }
+  else list.innerHTML = v.map((c) => `
+    <div class="case ${selected === c.id ? "sel" : ""}" data-id="${c.id}">
+      <div class="score ${scoreClass(c)}">${Math.round(c.score)}</div>
+      <div><div class="sum">${esc(c.summary || "SOS")}</div>
+        <div class="why">${esc(c.reason)}</div>
+        <div class="tags">
+          <span class="tag">${c.id}</span>${c.zone ? `<span class="tag">${esc(c.zone)}</span>` : ""}
+          ${c.status === "claimed" ? `<span class="tag purple">🚤 ${esc(c.team)} · ETA ${c.eta_min} min</span>` : ""}
+          ${c.status === "closed" ? `<span class="tag">✔ reached</span>` : ""}
+          ${c.location_approx ? `<span class="tag red">approx. location</span>` : ""}
+          ${c.overridden ? `<span class="tag purple">manual priority</span>` : ""}
+          ${c.flags.includes("suspicious") ? `<span class="tag red">⚠ suspicious</span>` : ""}
+        </div></div>
+    </div>`).join("");
+  list.querySelectorAll(".case").forEach((el) => el.onclick = () => openCase(el.dataset.id));
+  if (map) {
+    const ids = new Set(v.map((c) => c.id));
+    Object.keys(markers).forEach((id) => { if (!ids.has(id)) { map.removeLayer(markers[id]); delete markers[id]; } });
+    v.forEach((c) => {
+      const opts = { radius: 6 + Math.min(c.score / 15, 9), color: scoreColor(c), fillColor: scoreColor(c), fillOpacity: .75, weight: c.location_approx ? 1 : 2, dashArray: c.location_approx ? "3" : null };
+      if (markers[c.id]) { markers[c.id].setLatLng([c.lat, c.lng]).setStyle(opts); }
+      else { markers[c.id] = L.circleMarker([c.lat, c.lng], opts).addTo(map).on("click", () => openCase(c.id)); }
+      markers[c.id].bindTooltip(`${Math.round(c.score)} · ${esc(c.summary)}`);
+    });
+  }
+}
+
+async function refresh() {
+  try {
+    [cases, teams] = await Promise.all([api("/api/cases"), api("/api/teams")]);
+    render();
+    const s = await api("/api/stats");
+    document.getElementById("hdr-extra").innerHTML = `
+      <div class="stat"><b>${s.total}</b><small>messages</small></div>
+      <div class="stat"><b>${s.cases}</b><small>cases</small></div>
+      <div class="stat"><b style="color:var(--crit)">${s.open}</b><small>open</small></div>
+      <div class="stat"><b style="color:var(--claimed)">${s.claimed}</b><small>claimed</small></div>
+      <div class="stat"><b style="color:var(--low)">${s.closed}</b><small>reached</small></div>
+      ${s.queued ? `<div class="stat"><small>AI triaging ${s.queued}…</small></div>` : ""}`;
+    const un = await api("/api/unlocated");
+    const u = document.getElementById("unlocated");
+    u.style.display = un.length ? "flex" : "none";
+    u.innerHTML = un.length ? `<span class="pill warn">${un.length} SOS without location - call back</span>` +
+      un.slice(0, 3).map((m) => `<span class="muted" title="${esc(m.text)}">${esc(m.text.slice(0, 40))}…</span>`).join("") : "";
+    if (selected) openCase(selected, true);
+  } catch (e) { console.error(e); }
+}
+
+async function openCase(id, quiet) {
+  selected = id;
+  const c = await api(`/api/cases/${id}`);
+  const d = document.getElementById("drawer");
+  const sug = c.suggestion;
+  d.innerHTML = `
+    <div class="row" style="justify-content:space-between"><h3>${c.id} · ${esc(c.zone || "")}</h3><button onclick="closeDrawer()">✕</button></div>
+    <div class="row"><div class="score ${scoreClass(c)}" style="width:60px">${Math.round(c.score)}</div>
+      <div><b>${esc(c.summary)}</b><div class="muted">${esc(c.reason)}</div></div></div>
+    <div class="muted">AI score ${c.ai_score}${c.overridden ? " (overridden)" : ""} · first report ${ago(c.first_seen)} · ${c.message_count} report(s) ·
+      ${c.lat.toFixed(5)}, ${c.lng.toFixed(5)} ${c.location_approx ? "(approximate)" : ""}</div>
+    ${c.status === "open" ? `
+      <div class="card" style="margin-top:12px">
+        ${sug ? `<div class="muted" style="margin-bottom:6px">Suggested: <b>${esc(sug.team)}</b> - ${esc(sug.why)}, ETA ~${sug.eta_min} min${sug.busy ? " (currently busy)" : ""}</div>` : ""}
+        <div class="row"><select id="team">${teams.map((t) => `<option value="${t.id}" ${sug && sug.team_id === t.id ? "selected" : ""}>${esc(t.name)}${t.active_cases ? ` (${t.active_cases} active)` : ""}</option>`).join("")}</select>
+        <input id="eta" type="number" placeholder="ETA min" style="width:90px" value="${sug ? sug.eta_min : ""}">
+        <button class="primary" onclick="claim('${c.id}')">Claim case</button></div>
+      </div>` : ""}
+    ${c.status === "claimed" ? `<div class="row"><span class="pill">🚤 ${esc(c.team)} · ETA ${c.eta_min} min</span>
+      <button class="primary" onclick="act('${c.id}','close')">Mark reached</button><button onclick="act('${c.id}','release')">Release</button></div>` : ""}
+    ${c.status === "closed" ? `<div class="row"><span class="pill ok">Reached ${ago(c.closed_at)}</span></div>` : ""}
+    <div class="row"><span class="muted">Manual priority:</span><input id="ovr" type="number" style="width:80px" value="${c.overridden ? c.score : ""}">
+      <button onclick="override('${c.id}')">Set</button><button onclick="override('${c.id}', true)">Clear</button></div>
+    <h4>Needs</h4><div class="tags">${[...c.vulnerable.map((v) => `<span class="tag">${v}</span>`), ...c.medical.map((v) => `<span class="tag red">${v.replace("_", " ")}</span>`), ...c.needs.map((v) => `<span class="tag">${v}</span>`)].join("") || '<span class="muted">-</span>'}</div>
+    <h4>Original messages (${c.messages.length})</h4>
+    ${c.messages.map((m) => `<div class="msg"><div class="meta">${m.channel}${m.hops ? ` · ${m.hops} hops` : ""} · ${m.lang || ""} · ${m.extractor || ""} · sig: ${m.sig_status}${m.flags.length ? " · " + m.flags.join(", ") : ""}</div>${esc(m.text)}</div>`).join("")}`;
+  d.classList.add("open");
+  if (!quiet && map) map.setView([c.lat, c.lng], Math.max(map.getZoom(), 14));
+  render();
+}
+function closeDrawer() { selected = null; document.getElementById("drawer").classList.remove("open"); render(); }
+
+async function claim(id) {
+  try { await api(`/api/cases/${id}/claim`, { method: "POST", body: { team_id: document.getElementById("team").value, eta_min: Number(document.getElementById("eta").value) || null } }); toast("Case claimed - status sent back to the phone"); }
+  catch (e) { toast(e.message); }
+  refresh();
+}
+async function act(id, a) { try { await api(`/api/cases/${id}/${a}`, { method: "POST" }); } catch (e) { toast(e.message); } refresh(); }
+async function override(id, clear) {
+  await api(`/api/cases/${id}/override`, { method: "POST", body: { score: clear ? null : document.getElementById("ovr").value } }); refresh();
+}
+
+document.getElementById("filter").onchange = render;
+document.getElementById("search").oninput = render;
+document.getElementById("btn-demo").onclick = async () => {
+  const r = await api("/api/demo/load", { method: "POST" }); toast(`${r.loaded} messages queued for AI triage (${r.duplicates} duplicates dropped)`);
+};
+document.getElementById("btn-reset").onclick = async () => {
+  if (!confirm("Wipe all messages, cases, households and payouts?")) return;
+  await api("/api/demo/reset", { method: "POST" }); Object.values(markers).forEach((m) => map && map.removeLayer(m)); markers = {}; closeDrawer(); refresh();
+};
+
+initMap(); refresh();
+liveUpdates(debounce(refresh, 400));
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>

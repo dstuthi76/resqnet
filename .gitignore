@@ -1,0 +1,13 @@
+.env
+*.db
+*.db-*
+__pycache__/
+node_modules/
+contracts/artifacts/
+contracts/cache/
+mobile/android/
+mobile/build/
+mobile/.dart_tool/
+mobile/.flutter-plugins*
+mobile/pubspec.lock
+data/flood_readings.json.bak

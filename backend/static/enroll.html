@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ResQNet · Enrol household</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap" style="max-width:560px">
+  <div class="card">
+    <h3 style="margin-top:0">Enrol a household in flood relief cover</h3>
+    <p class="muted">Used by residents or NGO field workers / self-help groups. The name and phone are hashed with a secret salt on the server; only the hash and the zone are written to the blockchain.</p>
+    <form id="f" style="display:flex;flex-direction:column;gap:10px">
+      <input name="name" placeholder="Head of household name" required>
+      <input name="phone" placeholder="Phone number" required>
+      <select name="zone_id" id="zone" required></select>
+      <select name="channel"><option value="app">Self (app)</option><option value="ngo-field">NGO field worker</option><option value="shg">Self-help group</option></select>
+      <button class="primary">Enrol</button>
+    </form>
+    <div id="out" style="margin-top:12px"></div>
+  </div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+header("/enroll");
+api("/api/zones").then((g) => document.getElementById("zone").innerHTML = g.features.map((f) => `<option value="${f.properties.zoneId}">${esc(f.properties.name)}</option>`).join(""));
+document.getElementById("f").onsubmit = async (e) => {
+  e.preventDefault();
+  const body = Object.fromEntries(new FormData(e.target));
+  try {
+    const r = await api("/api/households", { method: "POST", body });
+    document.getElementById("out").innerHTML = `<div class="msg"><b>Enrolled ✔</b><div class="muted">${esc(r.note)}</div>
+      <div class="mono">id hash: ${r.id_hash.slice(0, 24)}…<br>custodial wallet: ${r.wallet}<br>tx: ${r.tx.slice(0, 20)}…</div></div>`;
+    e.target.reset();
+  } catch (err) { toast(err.message); }
+};
+</script>
+</body>
+</html>

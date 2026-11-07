@@ -1,0 +1,25 @@
+name: resqnet_app
+description: ResQNet - offline SOS over a Bluetooth / Wi-Fi Direct mesh.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  nearby_connections: ^4.1.1
+  permission_handler: ^11.3.1
+  geolocator: ^13.0.1
+  http: ^1.2.2
+  shared_preferences: ^2.3.2
+  cryptography: ^2.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

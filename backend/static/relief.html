@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ResQNet · Relief & payouts</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div id="banner"></div>
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-top:0">Parametric rule</h3>
+      <div id="rule" class="muted"></div>
+      <div class="row">
+        <button id="b-enrol">1 · Enrol demo households</button>
+        <button id="b-read" class="primary">2 · Submit satellite readings</button>
+        <button id="b-fund">Fund pool +0.1 (sim)</button>
+      </div>
+      <div class="muted">3 · Then have 2 of 3 NGOs confirm a flooded zone below → payouts fire automatically.</div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Relief pool</h3>
+      <div id="pool" style="font-size:26px;font-weight:800">-</div>
+      <div id="contract" class="muted"></div>
+      <div id="totals" class="muted" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;overflow-x:auto">
+    <h3 style="margin-top:0">Zones · event <span id="event" class="mono"></span></h3>
+    <table><thead><tr><th>Zone</th><th>Households</th><th>Sentinel-1 flooded</th><th>NGO confirmations</th><th>Status</th><th>Paid</th></tr></thead>
+    <tbody id="zones"></tbody></table>
+  </div>
+
+  <div class="grid2" style="margin-top:16px">
+    <div class="card" style="overflow-x:auto">
+      <h3 style="margin-top:0">Payouts (public audit trail)</h3>
+      <table><thead><tr><th>Household (hash)</th><th>Zone</th><th>Wallet</th><th>Amount</th><th>Tx</th></tr></thead><tbody id="payouts"></tbody></table>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Log a relief delivery</h3>
+      <form id="relief-form" class="row" style="flex-direction:column;align-items:stretch">
+        <select name="ngo_id" id="ngo-select"></select>
+        <input name="batch_id" placeholder="Batch ID e.g. FOOD-0042" required>
+        <input name="from_party" placeholder="From (warehouse / donor)" required>
+        <input name="to_party" placeholder="To (camp / delivery point)" required>
+        <input name="photo" type="file" accept="image/*" required>
+        <button class="primary">Record with photo proof</button>
+      </form>
+      <div class="muted">Only the photo's SHA-256 hash goes on-chain; the photo itself goes to IPFS (Pinata) if configured.</div>
+      <table style="margin-top:8px"><tbody id="rlog"></tbody></table>
+      <h3>NGO track record</h3>
+      <table><thead><tr><th>NGO</th><th>Wallet</th><th>Cases reached</th><th>Deliveries</th></tr></thead><tbody id="ngos"></tbody></table>
+    </div>
+  </div>
+</div>
+<script src="/static/common.js"></script>
+<script>
+header("/relief");
+let st = null;
+const eth = (w) => (Number(w) / 1e18).toFixed(4) + " ETH";
+
+async function load() {
+  st = await api("/api/relief/state");
+  const tx = st.explorer_tx;
+  document.getElementById("banner").innerHTML = st.mode === "sim"
+    ? `<div class="banner">Blockchain <b>simulator</b> mode: same rules as the Solidity contract, but no real transactions. Set CHAIN_MODE=sepolia in .env for real testnet payouts.</div>` : "";
+  document.getElementById("rule").innerHTML = `Pay <b>${eth(st.payout_wei)}</b> to every enrolled household in a zone when Sentinel-1 shows it flooded for <b>≥ ${st.rule.hours} h</b> <i>and</i> at least <b>${st.rule.confirmations} of ${st.ngos.length}</b> partner NGOs confirm. One payout per household per event.`;
+  document.getElementById("pool").textContent = st.pool_wei == null ? "unavailable" : eth(st.pool_wei);
+  document.getElementById("contract").innerHTML = st.contract ? `Contract <a target="_blank" href="${st.explorer_addr}${st.contract}" class="mono">${st.contract}</a>` : "Simulated contract";
+  const paidN = st.zones.reduce((a, z) => a + z.paid_count, 0), hh = st.zones.reduce((a, z) => a + z.households, 0);
+  document.getElementById("totals").textContent = `${hh} households enrolled · ${paidN} paid this event`;
+  document.getElementById("event").textContent = st.event_id;
+  document.getElementById("zones").innerHTML = st.zones.map((z) => {
+    const confd = new Set(z.confirmations.map((c) => c.ngo_id));
+    const flooded = z.hours != null && z.hours >= st.rule.hours;
+    return `<tr>
+      <td><b>${esc(z.name)}</b><div class="muted mono">${z.zoneId}</div></td>
+      <td>${z.households}${z.triggered && z.eligible < z.households ? `<div class="muted" style="font-size:11px">${z.households - z.eligible} enrolled after trigger - not eligible</div>` : ""}</td>
+      <td>${z.hours == null ? '<span class="muted">no reading</span>' : `<b style="color:${flooded ? "var(--crit)" : "var(--muted)"}">${z.hours} h</b>${z.fraction != null ? ` <span class="muted">(${Math.round(z.fraction * 100)}% area)</span>` : ""}<div>${txLink(z.reading_tx, tx)}</div>`}</td>
+      <td>${st.ngos.map((n) => confd.has(n.id) ? `<span class="tag purple" title="${esc(n.name)}">✔ ${esc(n.name.replace("Relief ", ""))}</span>`
+        : `<button style="padding:3px 8px;font-size:12px" onclick="confirmZone('${n.id}','${z.zoneId}')">${esc(n.name.replace("Relief ", ""))} confirms</button>`).join(" ")}</td>
+      <td>${z.triggered ? `<span class="pill ok">PAID OUT</span><div>${txLink(z.trigger_tx, tx)}</div>` :
+        `<span class="pill">${flooded ? `waiting for NGOs (${z.confirmations.length}/${st.rule.confirmations})` : "not triggered"}</span>`}</td>
+      <td>${z.paid_count ? `${z.paid_count} × = ${eth(z.paid_wei)}` : "-"}${z.triggered && z.paid_count < z.eligible ? `<div><button style="padding:3px 8px;font-size:12px" onclick="processZone('${z.zoneId}')">Continue payouts</button></div>` : ""}</td></tr>`;
+  }).join("");
+  document.getElementById("payouts").innerHTML = st.payouts.map((p) => `<tr><td class="mono">${p.id_hash.slice(0, 12)}…</td><td>${p.zone_id}</td>
+    <td>${st.explorer_addr ? `<a class="mono" target="_blank" href="${st.explorer_addr}${p.wallet}">${p.wallet.slice(0, 10)}…</a>` : `<span class="mono">${p.wallet.slice(0, 10)}…</span>`}</td>
+    <td>${eth(p.amount_wei)}</td><td>${txLink(p.tx, tx)}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">No payouts yet</td></tr>';
+  document.getElementById("ngos").innerHTML = st.ngos.map((n) => `<tr><td>${esc(n.name)}</td><td class="mono">${n.wallet.slice(0, 10)}…</td><td>${n.cases_reached}</td><td>${n.deliveries}</td></tr>`).join("");
+  const sel = document.getElementById("ngo-select");
+  if (!sel.options.length) sel.innerHTML = st.ngos.map((n) => `<option value="${n.id}">${esc(n.name)}</option>`).join("");
+  document.getElementById("rlog").innerHTML = st.relief_log.map((r) => `<tr><td class="mono">${esc(r.batch_id)}</td><td>${esc(r.from_party)} → ${esc(r.to_party)}</td>
+    <td class="mono" title="${r.photo_hash}">${r.photo_hash.slice(0, 10)}…${r.ipfs_cid ? ` <a target="_blank" href="https://gateway.pinata.cloud/ipfs/${r.ipfs_cid}">photo</a>` : ""}</td><td>${txLink(r.tx, tx)}</td></tr>`).join("");
+}
+
+async function run(btn, fn) { btn.disabled = true; try { await fn(); } catch (e) { toast(e.message); } btn.disabled = false; load(); }
+async function confirmZone(ngo, zone) {
+  try { toast("Sending NGO confirmation…"); await api("/api/relief/confirm", { method: "POST", body: { ngo_id: ngo, zone_id: zone, event_id: st.event_id } }); toast("Confirmation recorded"); }
+  catch (e) { toast(e.message); } load();
+}
+async function processZone(zone) { try { await api("/api/relief/process", { method: "POST", body: { zone_id: zone, event_id: st.event_id } }); } catch (e) { toast(e.message); } load(); }
+document.getElementById("b-enrol").onclick = (e) => run(e.target, async () => { const r = await api("/api/demo/enroll?per_zone=4", { method: "POST" }); toast(`${r.enrolled} households enrolled`); });
+document.getElementById("b-read").onclick = (e) => run(e.target, async () => { toast("Submitting readings…"); const r = await api("/api/relief/readings/load", { method: "POST" }); toast(`${r.submitted.length} zone readings submitted from ${r.file}`); });
+document.getElementById("b-fund").onclick = (e) => run(e.target, () => api("/api/relief/fund", { method: "POST", body: { eth: 0.1 } }));
+document.getElementById("relief-form").onsubmit = async (e) => {
+  e.preventDefault();
+  try { const r = await api("/api/relief/log", { method: "POST", body: new FormData(e.target) }); toast("Logged, photo hash " + r.photo_hash.slice(0, 10)); e.target.reset(); }
+  catch (err) { toast(err.message); } load();
+};
+load(); liveUpdates(debounce(load, 500));
+</script>
+</body>
+</html>

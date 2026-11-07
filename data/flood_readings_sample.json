@@ -1,0 +1,17 @@
+{
+  "_note": "PLACEHOLDER VALUES for offline demos only. Run earth-engine/flood_zones.js (or flood_zones.py) and save its output as data/flood_readings.json - the backend uses that file automatically when it exists.",
+  "eventId": "HYD-2020-10",
+  "source": "sample (placeholder - replace with Earth Engine output)",
+  "readings": [
+    {"zoneId": "HYD-MLK", "hoursFlooded": 96, "floodedFraction": 0.31},
+    {"zoneId": "HYD-CYG", "hoursFlooded": 120, "floodedFraction": 0.38},
+    {"zoneId": "HYD-FLK", "hoursFlooded": 72, "floodedFraction": 0.22},
+    {"zoneId": "HYD-TLC", "hoursFlooded": 60, "floodedFraction": 0.18},
+    {"zoneId": "HYD-MDP", "hoursFlooded": 12, "floodedFraction": 0.05},
+    {"zoneId": "HYD-LBN", "hoursFlooded": 84, "floodedFraction": 0.27},
+    {"zoneId": "HYD-SRN", "hoursFlooded": 48, "floodedFraction": 0.16},
+    {"zoneId": "HYD-UPL", "hoursFlooded": 24, "floodedFraction": 0.07},
+    {"zoneId": "HYD-HYT", "hoursFlooded": 0, "floodedFraction": 0.02},
+    {"zoneId": "HYD-MRB", "hoursFlooded": 72, "floodedFraction": 0.25}
+  ]
+}
